@@ -176,45 +176,6 @@ try {
     const r = (p) => process.mainModule.require(p.startsWith('.') ? process.mainModule.require('path').join(process.resourcesPath, 'app', p) : p);
     ${expr} })()`);
 
-  // Keys, sent the way the keyboard sends them (Electron's sendInputEvent; the
-  // DevTools protocol marks its own key events so they never reach the menu).
-  const keys = JSON.parse(await run(`
-    const { GooseWindow } = r('./src/main/window.js');
-    const w = GooseWindow.all()[0];
-    const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-    const press = async (wc, keyCode, modifiers = []) => {
-      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-      await wait(1200);
-    };
-    const at = () => w.tabs.indexOf(w.active);
-    const out = { start: w.tabs.length };
-    await press(w.chrome, 'T', ['control']);
-    out.ctrlTWindow = w.tabs.length;
-    await wait(2500);
-    const page = w.tabs.find((t) => t.wc && /^https?:/.test(t.wc.getURL()));
-    out.pageUrl = page ? page.wc.getURL() : '';
-    if (page) { await press(page.wc, 'T', ['control']); }
-    out.ctrlTPage = w.tabs.length;
-    await press(w.chrome, '1', ['control']);
-    out.ctrl1 = at();
-    await press(w.chrome, 'PageDown', ['control']);
-    out.ctrlPageDown = at();
-    if (page) { await press(w.active.wc || w.chrome, '9', ['control']); }
-    out.ctrl9 = at();
-    out.last = w.tabs.length - 1;
-    await press(w.chrome, 'W', ['control']);
-    out.ctrlW = w.tabs.length;
-    return JSON.stringify(out);`));
-  fs.writeFileSync(path.join(OUT, 'keys.json'), JSON.stringify(keys, null, 2));
-  check('Ctrl+T in the window opens a tab', keys.ctrlTWindow === keys.start + 1, JSON.stringify(keys));
-  check('Ctrl+T in a web page opens a tab', keys.ctrlTPage === keys.ctrlTWindow + 1, keys.pageUrl);
-  check('Ctrl+1 (a hidden menu item) goes to the first tab', keys.ctrl1 === 0);
-  check('Ctrl+PageDown (a Windows-only key) goes to the next tab', keys.ctrlPageDown === 1);
-  check('Ctrl+9 in a web page goes to the last tab', keys.ctrl9 === keys.last);
-  check('Ctrl+W closes a tab', keys.ctrlW === keys.ctrlTPage - 1);
-  check('keys screenshot', await shot(ui, '4-keys.png'));
-
   const tools = await run("return r('./src/main/brain/tools.js').TOOLS.map((t) => t.function.name).join(',')");
   check('the brain is not offered the computer tool', !/computer/.test(tools), tools);
   const prompt = await run("return r('./src/main/brain/prompts.js').system().slice(0, 600)");

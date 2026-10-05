@@ -88,6 +88,30 @@ jobs:
           if (Select-String -Path "$env:RUNNER_TEMP\profile\goose.log" -Pattern '^\S+ \S+ (crash|unhandled) ' -Quiet) { 'FAIL goose.log has a crash'; $code = 1 }
           exit $code
 
+      - name: Keys and title bar, on screen
+        run: |
+          # Windows gives keys only to the window in front, so this copy is on screen.
+          $env:GOOSE_TEST = 'show'
+          $env:GOOSE_PROFILE = "$env:RUNNER_TEMP\profile-shown"
+          $env:GOOSE_HANDS = 'off'
+          $p = Start-Process -FilePath "$env:RUNNER_TEMP\goos\Goos\Goos.exe" -ArgumentList '--inspect=127.0.0.1:9557' -PassThru
+          node .github/workflows/win-keys.mjs 9557 "$env:RUNNER_TEMP\out"
+          $code = $LASTEXITCODE
+          # The window as Windows draws it, title bar buttons and all.
+          Add-Type -AssemblyName System.Drawing
+          $b = Get-Content "$env:RUNNER_TEMP\out\bounds.json" -ErrorAction SilentlyContinue | ConvertFrom-Json
+          if ($b) {
+            $bmp = New-Object System.Drawing.Bitmap $b.width, $b.height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.x, $b.y, 0, 0, $bmp.Size)
+            $bmp.Save("$env:RUNNER_TEMP\out\6-desktop.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            'saved 6-desktop.png'
+          }
+          Stop-Process -Id $p.Id -ErrorAction SilentlyContinue
+          Start-Sleep 3
+          Get-Process -Name Goos -ErrorAction SilentlyContinue | Stop-Process -Force
+          exit $code
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

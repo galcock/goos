@@ -101,9 +101,9 @@ jobs:
           Add-Type -AssemblyName System.Drawing
           $b = Get-Content "$env:RUNNER_TEMP\out\bounds.json" -ErrorAction SilentlyContinue | ConvertFrom-Json
           if ($b) {
-            $bmp = New-Object System.Drawing.Bitmap $b.width, $b.height
+            $bmp = [System.Drawing.Bitmap]::new([int]$b.width, [int]$b.height)
             $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.CopyFromScreen($b.x, $b.y, 0, 0, $bmp.Size)
+            $g.CopyFromScreen([int]$b.x, [int]$b.y, 0, 0, $bmp.Size)
             $bmp.Save("$env:RUNNER_TEMP\out\6-desktop.png", [System.Drawing.Imaging.ImageFormat]::Png)
             'saved 6-desktop.png'
           }

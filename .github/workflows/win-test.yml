@@ -1,0 +1,190 @@
+# Tests a Windows build of Goos on GitHub's Windows machines, before it is
+# published: boots Goos.exe hidden and drives it over the DevTools protocol
+# (win-test.mjs), and runs the one-line installer the way people will.
+name: Windows build test
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: URL of Goos-win-x64.zip to test
+        required: true
+      arm64_zip_url:
+        description: URL of Goos-win-arm64.zip (empty skips the ARM test)
+        required: false
+        default: ''
+      ps1_url:
+        description: URL of install.ps1 to test
+        required: true
+      ollama:
+        description: Also let the installer install Ollama silently (1.6 GB)
+        type: boolean
+        default: false
+
+jobs:
+  boot:
+    name: Boot Goos.exe (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.arm64_zip_url != '' && '["x64","arm64"]' || '["x64"]') }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download and unpack
+        env:
+          ZIP: ${{ matrix.arch == 'arm64' && inputs.arm64_zip_url || inputs.zip_url }}
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest $env:ZIP -OutFile "$env:RUNNER_TEMP\goos.zip"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::ExtractToDirectory("$env:RUNNER_TEMP\goos.zip", "$env:RUNNER_TEMP\goos")
+          $exe = "$env:RUNNER_TEMP\goos\Goos\Goos.exe"
+          (Get-Item $exe).VersionInfo | Format-List ProductName, FileDescription, CompanyName, ProductVersion, OriginalFilename
+          "Machine: $env:PROCESSOR_ARCHITECTURE, $([Environment]::OSVersion.VersionString)"
+          Get-ChildItem "$env:RUNNER_TEMP\goos\Goos" | Format-Table Name, Length
+
+      - name: A Chrome profile to import
+        run: node .github/workflows/win-test-chrome.mjs
+
+      - name: Boot hidden and drive it
+        run: |
+          $env:GOOSE_TEST = '1'
+          $env:GOOSE_PROFILE = "$env:RUNNER_TEMP\profile"
+          $env:GOOSE_HANDS = 'off'
+          $exe = "$env:RUNNER_TEMP\goos\Goos\Goos.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--remote-debugging-port=9555', '--inspect=127.0.0.1:9556' -PassThru
+          "Goos.exe started, pid $($p.Id)"
+          node .github/workflows/win-test.mjs 9555 9556 "$env:RUNNER_TEMP\out"
+          $code = $LASTEXITCODE
+
+          # Under GOOSE_TEST no window may appear on screen.
+          $shown = Get-Process -Name Goos -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }
+          if ($shown) { "FAIL a Goos window is on screen: $($shown.MainWindowTitle)"; $code = 1 } else { 'ok   no Goos window on screen' }
+
+          # The default-browser button listed Goos as a browser.
+          $exeQ = '"' + $exe + '"'
+          $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\GoosURL\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+          $reg = (Get-ItemProperty 'HKCU:\Software\RegisteredApplications' -ErrorAction SilentlyContinue).Goos
+          $url = Get-ItemProperty 'HKCU:\Software\Clients\StartMenuInternet\Goos\Capabilities\URLAssociations' -ErrorAction SilentlyContinue
+          if ($cmd -eq "$exeQ `"%1`"" -and $reg -eq 'Software\Clients\StartMenuInternet\Goos\Capabilities' -and $url.https -eq 'GoosURL') {
+            "ok   Goos is listed as a browser: $cmd"
+          } else { "FAIL browser registration: cmd=[$cmd] reg=[$reg] https=[$($url.https)]"; $code = 1 }
+
+          Stop-Process -Id $p.Id -ErrorAction SilentlyContinue
+          Start-Sleep 3
+          Get-Process -Name Goos -ErrorAction SilentlyContinue | Stop-Process -Force
+          Copy-Item "$env:RUNNER_TEMP\profile\goose.log" "$env:RUNNER_TEMP\out\goose.log" -ErrorAction SilentlyContinue
+          '--- goose.log'
+          Get-Content "$env:RUNNER_TEMP\profile\goose.log" -ErrorAction SilentlyContinue
+          if (Select-String -Path "$env:RUNNER_TEMP\profile\goose.log" -Pattern '^\S+ \S+ (crash|unhandled) ' -Quiet) { 'FAIL goose.log has a crash'; $code = 1 }
+          exit $code
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: goos-win-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out
+
+  install:
+    name: Install with irm | iex (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    env:
+      GOOS_ZIP_URL: ${{ inputs.zip_url }}
+      PS1: ${{ inputs.ps1_url }}
+    steps:
+      - name: First install
+        env:
+          GOOS_SKIP_OLLAMA: '1'
+        run: |
+          "PowerShell $($PSVersionTable.PSVersion) $($PSVersionTable.PSEdition)"
+          irm $env:PS1 | iex
+
+      - name: Check what it left
+        run: |
+          $ok = $true
+          $dest = "$env:LOCALAPPDATA\Programs\Goos"
+          $exe = "$dest\Goos.exe"
+          if (Test-Path $exe) { "ok   $exe" } else { "FAIL no $exe"; $ok = $false }
+          if (Get-Item $exe -Stream Zone.Identifier -ErrorAction SilentlyContinue) { 'FAIL Goos.exe has the Mark of the Web'; $ok = $false } else { 'ok   Goos.exe has no Mark of the Web' }
+          if (Test-Path "$dest\resources\app\boot.js") { 'ok   the code is inside' } else { 'FAIL no resources\app\boot.js'; $ok = $false }
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($dir in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
+            $lnk = Join-Path $dir 'Goos.lnk'
+            if (Test-Path $lnk) {
+              $t = $shell.CreateShortcut($lnk).TargetPath
+              if ($t -eq $exe) { "ok   $lnk -> $t" } else { "FAIL $lnk -> $t"; $ok = $false }
+            } else { "FAIL no $lnk"; $ok = $false }
+          }
+          # The installer opened Goos; give it time to start and tag its shortcut.
+          Start-Sleep 20
+          $running = Get-Process -Name Goos -ErrorAction SilentlyContinue
+          if ($running) { "ok   Goos is running ($(@($running).Count) processes)" } else { 'FAIL Goos is not running'; $ok = $false }
+          $programs = [Environment]::GetFolderPath('Programs')
+          $aumid = (New-Object -ComObject Shell.Application).NameSpace($programs).ParseName('Goos.lnk').ExtendedProperty('System.AppUserModel.ID')
+          if ($aumid -eq 'ai.ameka.goose') { 'ok   the Start menu shortcut carries ai.ameka.goose' } else { "FAIL shortcut AppUserModelID is [$aumid]"; $ok = $false }
+          '--- goose.log'
+          Get-Content "$env:APPDATA\Goose\goose.log" -ErrorAction SilentlyContinue
+          if (-not $ok) { exit 1 }
+
+      - name: Run again while Goos is open
+        env:
+          GOOS_SKIP_OLLAMA: '1'
+        run: |
+          $out = Invoke-Expression (Invoke-RestMethod $env:PS1) 6>&1 | Out-String
+          $out
+          if ($out -match 'Quit Goos, then run this again') { 'ok   it asks you to quit Goos first' } else { 'FAIL it did not stop'; exit 1 }
+          if (-not (Test-Path "$env:LOCALAPPDATA\Programs\Goos\Goos.exe")) { 'FAIL Goos.exe is gone'; exit 1 }
+
+      - name: Quit Goos and update over the old copy
+        env:
+          GOOS_SKIP_OLLAMA: '1'
+          GOOS_NO_LAUNCH: '1'
+        run: |
+          Get-Process -Name Goos -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          $before = (Get-Item "$env:LOCALAPPDATA\Programs\Goos\Goos.exe").CreationTimeUtc
+          irm $env:PS1 | iex
+          $after = (Get-Item "$env:LOCALAPPDATA\Programs\Goos\Goos.exe").CreationTimeUtc
+          if ($after -gt $before) { 'ok   replaced with a fresh copy' } else { "FAIL not replaced ($before / $after)"; exit 1 }
+          if (Get-Process -Name Goos -ErrorAction SilentlyContinue) { 'FAIL GOOS_NO_LAUNCH still opened Goos'; exit 1 } else { 'ok   left closed' }
+          $left = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Force -Filter '.goos-*'
+          if ($left) { "FAIL staging left behind: $left"; exit 1 } else { 'ok   nothing left behind' }
+
+  ollama:
+    name: Installer installs Ollama silently
+    if: inputs.ollama
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Install with Ollama
+        env:
+          GOOS_ZIP_URL: ${{ inputs.zip_url }}
+          GOOS_NO_LAUNCH: '1'
+        run: |
+          $t = Get-Date
+          irm '${{ inputs.ps1_url }}' | iex
+          "took $([int]((Get-Date) - $t).TotalSeconds) s"
+          $ollama = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
+          if (Test-Path $ollama) { "ok   $ollama" } else { 'FAIL Ollama is not installed'; exit 1 }
+          $up = $false
+          foreach ($i in 1..60) {
+            try { $v = Invoke-RestMethod 'http://127.0.0.1:11434/api/version' -TimeoutSec 2; $up = $true; break } catch { Start-Sleep 2 }
+          }
+          if ($up) { "ok   Ollama answers, version $($v.version)" } else { 'FAIL Ollama is not answering'; exit 1 }
+          Get-Process | Where-Object { $_.Name -like 'ollama*' } | Format-Table Name, Id

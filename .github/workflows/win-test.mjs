@@ -135,7 +135,7 @@ const lines = await waitFor(async () => {
   const o = JSON.parse(v);
   return o['#brain-line'] !== 'Checking…' ? o : null;
 }, 60000, 500);
-const extra = await evaluate(ui, "({ def: !document.querySelector('#default-browser').hidden, allow: !document.querySelector('#computer-allow').hidden, chrome: !document.querySelector('#chrome-import').hidden, system: document.querySelector('#row-system').textContent.trim().split('\\n')[0], hint: document.querySelector('#gb-status').textContent })");
+const extra = await evaluate(ui, "({ def: !document.querySelector('#default-browser').hidden, allow: !document.querySelector('#computer-allow').hidden, chrome: !document.querySelector('#chrome-import').hidden, voices: [...document.querySelector('#v-system').options].map((o) => o.textContent).join(','), hint: document.querySelector('#gb-status').textContent })");
 fs.writeFileSync(path.join(OUT, 'settings.json'), JSON.stringify({ lines, extra }, null, 2));
 check('no Ollama: Goos says it needs Ollama', /Goos needs Ollama to think/.test(lines?.['#brain-line'] || ''), lines?.['#brain-line']);
 check('using other apps is Mac-only, said plainly', lines?.['#computer-line'] === 'Using other apps is Mac-only for now, so Goos works inside the browser.', lines?.['#computer-line']);
@@ -143,6 +143,7 @@ check('no whisper.cpp: voice is off, said plainly', /Voice is off on this PC/.te
 check('passwords are encrypted on this PC', /encrypted on this PC\./.test(lines?.['#vault-line'] || ''), lines?.['#vault-line']);
 check('the default-browser button shows', extra.def === true);
 check('no "Let Goos use this Mac" button', extra.allow === false);
+check('the Windows voice picker offers a woman or a man', extra.voices === 'Woman,Man', extra.voices);
 check('voice hint without whisper', /Voice is off/.test(extra.hint), extra.hint);
 check('settings screenshot', await shot(ui, '2-settings.png'));
 
@@ -161,31 +162,6 @@ if (offer) {
   check('import screenshot', await shot(ui, '3-import.png'));
 }
 
-// ------------------------------------------------------------------- keys --
-// Keys pressed in the window, and in a web page, reach Goos's (hidden) menu.
-const tabs = () => evaluate(ui, "document.querySelectorAll('#tabs .tab').length");
-const activeIndex = () => evaluate(ui, "[...document.querySelectorAll('#tabs .tab')].findIndex((t) => t.classList.contains('active'))");
-const before = await tabs();
-await key(ui, { key: 't', code: 'KeyT', vk: 84, modifiers: 2 });
-const afterCtrlT = await waitFor(async () => ((await tabs()) > before ? tabs() : null), 5000);
-check('Ctrl+T in the window opens a tab', !!afterCtrlT, `${before} -> ${afterCtrlT ?? await tabs()}`);
-await key(ui, { key: '1', code: 'Digit1', vk: 49, modifiers: 2 });
-const first = await waitFor(async () => ((await activeIndex()) === 0 ? 'first' : null), 5000);
-check('Ctrl+1 (a hidden menu item) goes to the first tab', !!first, `active ${await activeIndex()}`);
-await key(ui, { key: 'PageDown', code: 'PageDown', vk: 34, modifiers: 2 });
-const second = await waitFor(async () => ((await activeIndex()) === 1 ? 'second' : null), 5000);
-check('Ctrl+PageDown (Windows-only key) goes to the next tab', !!second, `active ${await activeIndex()}`);
-const page = await waitFor(async () => (await list(CDP)).find((t) => t.type === 'page' && /^https?:/.test(t.url)), 20000);
-if (page) {
-  const p = await connect(page.webSocketDebuggerUrl);
-  const n = await tabs();
-  await key(p, { key: 't', code: 'KeyT', vk: 84, modifiers: 2 });
-  const more = await waitFor(async () => ((await tabs()) > n ? tabs() : null), 5000);
-  check('Ctrl+T in a web page opens a tab', !!more, `${n} -> ${more ?? await tabs()} (${page.url.slice(0, 60)})`);
-  p.close();
-} else check('a web page to press keys in', false);
-check('keys screenshot', await shot(ui, '4-keys.png'));
-
 // -------------------------------------------------------- default browser --
 await evaluate(ui, "window.goose.send('app:default-browser'); true");
 await sleep(4000);
@@ -195,7 +171,50 @@ check('default-browser button pressed', true, 'registry checked by the workflow'
 try {
   const node = (await list(INSPECT))[0];
   const main = await connect(node.webSocketDebuggerUrl);
-  const run = async (expr) => evaluate(main, `(async () => { const r = process.mainModule.require; ${expr} })()`);
+  // Goos's own modules, by absolute path (the inspector has no require of its own).
+  const run = async (expr) => evaluate(main, `(async () => {
+    const r = (p) => process.mainModule.require(p.startsWith('.') ? process.mainModule.require('path').join(process.resourcesPath, 'app', p) : p);
+    ${expr} })()`);
+
+  // Keys, sent the way the keyboard sends them (Electron's sendInputEvent; the
+  // DevTools protocol marks its own key events so they never reach the menu).
+  const keys = JSON.parse(await run(`
+    const { GooseWindow } = r('./src/main/window.js');
+    const w = GooseWindow.all()[0];
+    const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+    const press = async (wc, keyCode, modifiers = []) => {
+      wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+      wc.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+      await wait(1200);
+    };
+    const at = () => w.tabs.indexOf(w.active);
+    const out = { start: w.tabs.length };
+    await press(w.chrome, 'T', ['control']);
+    out.ctrlTWindow = w.tabs.length;
+    await wait(2500);
+    const page = w.tabs.find((t) => t.wc && /^https?:/.test(t.wc.getURL()));
+    out.pageUrl = page ? page.wc.getURL() : '';
+    if (page) { await press(page.wc, 'T', ['control']); }
+    out.ctrlTPage = w.tabs.length;
+    await press(w.chrome, '1', ['control']);
+    out.ctrl1 = at();
+    await press(w.chrome, 'PageDown', ['control']);
+    out.ctrlPageDown = at();
+    if (page) { await press(w.active.wc || w.chrome, '9', ['control']); }
+    out.ctrl9 = at();
+    out.last = w.tabs.length - 1;
+    await press(w.chrome, 'W', ['control']);
+    out.ctrlW = w.tabs.length;
+    return JSON.stringify(out);`));
+  fs.writeFileSync(path.join(OUT, 'keys.json'), JSON.stringify(keys, null, 2));
+  check('Ctrl+T in the window opens a tab', keys.ctrlTWindow === keys.start + 1, JSON.stringify(keys));
+  check('Ctrl+T in a web page opens a tab', keys.ctrlTPage === keys.ctrlTWindow + 1, keys.pageUrl);
+  check('Ctrl+1 (a hidden menu item) goes to the first tab', keys.ctrl1 === 0);
+  check('Ctrl+PageDown (a Windows-only key) goes to the next tab', keys.ctrlPageDown === 1);
+  check('Ctrl+9 in a web page goes to the last tab', keys.ctrl9 === keys.last);
+  check('Ctrl+W closes a tab', keys.ctrlW === keys.ctrlTPage - 1);
+  check('keys screenshot', await shot(ui, '4-keys.png'));
+
   const tools = await run("return r('./src/main/brain/tools.js').TOOLS.map((t) => t.function.name).join(',')");
   check('the brain is not offered the computer tool', !/computer/.test(tools), tools);
   const prompt = await run("return r('./src/main/brain/prompts.js').system().slice(0, 600)");

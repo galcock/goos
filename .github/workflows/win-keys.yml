@@ -1,0 +1,41 @@
+# Diagnoses Goos's keyboard shortcuts on Windows, hidden and on screen.
+name: Windows keys diagnosis
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: URL of Goos-win-x64.zip
+        required: true
+
+jobs:
+  keys:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest '${{ inputs.zip_url }}' -OutFile "$env:RUNNER_TEMP\goos.zip"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::ExtractToDirectory("$env:RUNNER_TEMP\goos.zip", "$env:RUNNER_TEMP\goos")
+      - name: Hidden
+        run: |
+          $env:GOOSE_TEST = '1'; $env:GOOSE_PROFILE = "$env:RUNNER_TEMP\p1"; $env:GOOSE_HANDS = 'off'
+          $p = Start-Process "$env:RUNNER_TEMP\goos\Goos\Goos.exe" -ArgumentList '--inspect=127.0.0.1:9601' -PassThru
+          node .github/workflows/win-keys.mjs 9601
+          Stop-Process -Id $p.Id; Start-Sleep 2; Get-Process Goos -ErrorAction SilentlyContinue | Stop-Process -Force
+      - name: On screen
+        run: |
+          $env:GOOSE_TEST = 'show'; $env:GOOSE_PROFILE = "$env:RUNNER_TEMP\p2"; $env:GOOSE_HANDS = 'off'
+          $p = Start-Process "$env:RUNNER_TEMP\goos\Goos\Goos.exe" -ArgumentList '--inspect=127.0.0.1:9602' -PassThru
+          node .github/workflows/win-keys.mjs 9602
+          Get-Process Goos | Format-Table Id, MainWindowHandle, MainWindowTitle
+          Stop-Process -Id $p.Id; Start-Sleep 2; Get-Process Goos -ErrorAction SilentlyContinue | Stop-Process -Force

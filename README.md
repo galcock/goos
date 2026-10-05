@@ -7,14 +7,23 @@ intelligent search engine. It's made by [Ameka](https://ameka.ai).
 
 **Download:** [goos.si/download](https://goos.si/download)
 
-Or install it from Terminal in one step:
+Install it in one step. On a Mac, in Terminal:
 
 ```sh
 curl -fsSL https://goos.si/install.sh | sh
 ```
 
-Goos runs on Macs with Apple silicon (M1 or newer) and macOS 13 or later. It
-needs [Ollama](https://ollama.com/download), the free engine that runs its brain.
+On Windows, in PowerShell:
 
-This repository holds Goos's releases. Each release has a disk image
-(`Goos-mac-arm64.dmg`) and a zip (`Goos-mac-arm64.zip`) of the same app.
+```powershell
+irm https://goos.si/install.ps1 | iex
+```
+
+Goos runs on Macs with Apple silicon (M1 or newer) and macOS 13 or later, and
+on 64-bit Windows 10 and 11. It thinks with [Ollama](https://ollama.com/download),
+the free engine that runs its brain; both installers add it if it's missing.
+Using other apps and talking to Goos are Mac-only for now.
+
+This repository holds Goos's releases. Each release has a Mac disk image
+(`Goos-mac-arm64.dmg`), a Mac zip (`Goos-mac-arm64.zip`), and Windows zips for
+Intel and AMD PCs (`Goos-win-x64.zip`) and ARM PCs (`Goos-win-arm64.zip`).
